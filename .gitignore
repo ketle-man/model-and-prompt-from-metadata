@@ -1,0 +1,17 @@
+# テストデータ
+data/
+data2/
+data3/
+data4/
+
+# 一時ファイル
+ComfyUI_temp_*.json
+*.webp
+
+# 開発ログ
+DEVLOG.md
+
+# エディタ・ローカル設定
+.claude/
+.vscode/
+*.local.*
