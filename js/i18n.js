@@ -8,11 +8,12 @@ const _lang = (() => {
 const _T = {
 	en: {
 		drop_main:      "Drop ComfyUI image / workflow JSON",
-		drop_sub:       "Or click to select (PNG / JSON)",
+		drop_sub:       "Or click to select (PNG / WebP / JSON)",
 		parsing:        "Parsing…",
-		no_metadata:    "No metadata (use a ComfyUI-generated PNG or JSON)",
+		no_metadata:    "No metadata (use a ComfyUI-generated PNG, WebP, or JSON)",
 		no_ckpt_vae:    "No checkpoint / VAE info",
 		no_info:        "No info",
+		no_lora:        "No LoRA found in metadata",
 		error_prefix:   "Error: ",
 		file_too_large: "File too large (max 50 MB)",
 		error_parse:    "Parse error (see console for details)",
@@ -23,6 +24,7 @@ const _T = {
 		ckpt_header:    (n, ins) => `Checkpoint  Detected: ${n}  Installed: ${ins}`,
 		vae_header:     (n, ins) => `VAE  Detected: ${n}  Installed: ${ins}`,
 		vae_no_loader:  "VAE  (no VAELoader in workflow)",
+		lora_header:    (n, ins) => `LoRA  Detected: ${n}  Installed: ${ins}`,
 		label_positive: "Positive",
 		label_negative: "Negative",
 		preview_pos:    "▼ Positive Preview",
@@ -32,11 +34,12 @@ const _T = {
 	},
 	zh: {
 		drop_main:      "拖放 ComfyUI 图像 / 工作流 JSON",
-		drop_sub:       "或点击选择 (PNG / JSON)",
+		drop_sub:       "或点击选择 (PNG / WebP / JSON)",
 		parsing:        "解析中…",
-		no_metadata:    "无元数据（请使用 ComfyUI 生成的 PNG 或 JSON）",
+		no_metadata:    "无元数据（请使用 ComfyUI 生成的 PNG、WebP 或 JSON）",
 		no_ckpt_vae:    "未找到 Checkpoint / VAE 信息",
 		no_info:        "无信息",
+		no_lora:        "元数据中未找到 LoRA",
 		error_prefix:   "错误：",
 		file_too_large: "文件过大（最大 50 MB）",
 		error_parse:    "解析错误（详情请查看控制台）",
@@ -47,6 +50,7 @@ const _T = {
 		ckpt_header:    (n, ins) => `Checkpoint  检测到: ${n}  已安装: ${ins}`,
 		vae_header:     (n, ins) => `VAE  检测到: ${n}  已安装: ${ins}`,
 		vae_no_loader:  "VAE（工作流中无 VAELoader）",
+		lora_header:    (n, ins) => `LoRA  检测到: ${n}  已安装: ${ins}`,
 		label_positive: "Positive",
 		label_negative: "Negative",
 		preview_pos:    "▼ 正向提示词预览",
@@ -56,11 +60,12 @@ const _T = {
 	},
 	ja: {
 		drop_main:      "ComfyUI 画像 / ワークフローJSONをドロップ",
-		drop_sub:       "またはクリックして選択 (PNG / JSON)",
+		drop_sub:       "またはクリックして選択 (PNG / WebP / JSON)",
 		parsing:        "解析中…",
-		no_metadata:    "メタデータなし (ComfyUI生成PNGまたはJSONを使用してください)",
+		no_metadata:    "メタデータなし (ComfyUI生成PNG・WebP・JSONを使用してください)",
 		no_ckpt_vae:    "チェックポイント・VAE情報なし",
 		no_info:        "情報なし",
+		no_lora:        "メタデータに LoRA が見つかりません",
 		error_prefix:   "エラー: ",
 		file_too_large: "ファイルが大きすぎます（最大 50 MB）",
 		error_parse:    "解析エラー（詳細はコンソールを参照）",
@@ -71,6 +76,7 @@ const _T = {
 		ckpt_header:    (n, ins) => `Checkpoint  検出: ${n}件　インストール済み: ${ins}件`,
 		vae_header:     (n, ins) => `VAE  検出: ${n}件　インストール済み: ${ins}件`,
 		vae_no_loader:  "VAE  (ワークフロー内に VAELoader なし)",
+		lora_header:    (n, ins) => `LoRA  検出: ${n}件　インストール済み: ${ins}件`,
 		label_positive: "Positive",
 		label_negative: "Negative",
 		preview_pos:    "▼ ポジティブ プレビュー",
@@ -86,4 +92,4 @@ export function t(key, ...args) {
 }
 
 // Python側のwidget内部値（vae_name）— 既存ワークフローとの互換性のため変更しない
-export const VAE_NONE_VALUE = "なし";
+export const VAE_NONE_VALUE = "None";

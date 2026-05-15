@@ -1,3 +1,54 @@
+// ---- WebP EXIF 解析 ----
+
+async function readWebPEXIFChunk(file) {
+	const buffer = await file.arrayBuffer();
+	const bytes = new Uint8Array(buffer);
+	const view = new DataView(buffer);
+	const ascii = new TextDecoder("latin1");
+
+	if (bytes.byteLength < 12) return null;
+	if (ascii.decode(bytes.slice(0, 4)) !== "RIFF") return null;
+	if (ascii.decode(bytes.slice(8, 12)) !== "WEBP") return null;
+
+	let offset = 12;
+	while (offset + 8 <= buffer.byteLength) {
+		const fourcc = ascii.decode(bytes.slice(offset, offset + 4));
+		const chunkSize = view.getUint32(offset + 4, true);
+		if (fourcc === "EXIF") {
+			return bytes.slice(offset + 8, offset + 8 + chunkSize);
+		}
+		offset += 8 + chunkSize;
+		if (chunkSize % 2 === 1) offset++;
+	}
+	return null;
+}
+
+function extractWorkflowFromEXIF(exifBytes) {
+	const utf8 = new TextDecoder("utf-8", { fatal: false });
+	const text = utf8.decode(exifBytes);
+
+	for (const key of ["workflow:", "prompt:"]) {
+		const idx = text.indexOf(key + "{");
+		if (idx < 0) continue;
+
+		let jsonStr = text.slice(idx + key.length);
+		const nullIdx = jsonStr.indexOf("\x00");
+		if (nullIdx >= 0) jsonStr = jsonStr.slice(0, nullIdx);
+
+		try {
+			return { type: key.slice(0, -1), data: JSON.parse(sanitizeJSON(jsonStr)) };
+		} catch {
+			const lastBrace = jsonStr.lastIndexOf("}");
+			if (lastBrace > 0) {
+				try {
+					return { type: key.slice(0, -1), data: JSON.parse(sanitizeJSON(jsonStr.slice(0, lastBrace + 1))) };
+				} catch {}
+			}
+		}
+	}
+	return null;
+}
+
 // ---- PNG メタデータ解析 ----
 
 function findNull(arr, start = 0) {
@@ -71,15 +122,37 @@ async function parsePNGPromptText(file) {
 // ---- ワークフロー取得（PNG / JSON → 解析済みオブジェクト） ----
 
 export async function getParsedWorkflow(file) {
-	const isJSON =
-		file.type === "application/json" || file.name.toLowerCase().endsWith(".json");
-	const text = isJSON ? await file.text() : await parsePNGPromptText(file);
+	const name = file.name.toLowerCase();
+	const isJSON = file.type === "application/json" || name.endsWith(".json");
+	const isWebP = file.type === "image/webp" || name.endsWith(".webp");
+
+	if (isJSON) {
+		try { return JSON.parse(sanitizeJSON(await file.text())); } catch { return null; }
+	}
+	if (isWebP) {
+		const exifData = await readWebPEXIFChunk(file);
+		if (!exifData) return null;
+		return extractWorkflowFromEXIF(exifData)?.data ?? null;
+	}
+	// PNG
+	const text = await parsePNGPromptText(file);
 	if (!text) return null;
 	try {
-		return JSON.parse(text);
+		return JSON.parse(sanitizeJSON(text));
 	} catch {
 		return null;
 	}
+}
+
+// ---- JSON サニタイズ（NaN / Infinity → null） ----
+// ComfyUI の is_changed フィールドに NaN が入る場合があるため、
+// JSON.parse に渡す前に JSON 非準拠トークンを null に置換する。
+
+function sanitizeJSON(text) {
+	return text
+		.replace(/-Infinity\b/g, "null")
+		.replace(/\bInfinity\b/g, "null")
+		.replace(/\bNaN\b/g, "null");
 }
 
 // ---- カスタムノード定数 ----
@@ -90,8 +163,8 @@ const METADATA_NODE_TYPES = new Set([
 	"ImageMetadataCheckpointLoader",
 	"ImageMetadataPromptLoader",
 ]);
-// Python側の widget 内部値（vae_nameの「なし」= VAEなし）
-const VAE_NONE = "なし";
+// Python側の widget 内部値（vae_name の "None" = VAEなし）
+const VAE_NONE = "None";
 
 // ---- 共通ヘルパー ----
 
@@ -243,6 +316,87 @@ export function extractTextEncoders(workflow) {
 		}
 	}
 	return collectUnique(names);
+}
+
+// ---- LoRA 抽出 ----
+// 戻り値: { name, strength_model, strength_clip }[]
+
+export function extractLoRAs(workflow) {
+	if (!workflow || typeof workflow !== "object") return [];
+	const results = [];
+	const seen = new Set();
+
+	function add(name, sm, sc) {
+		if (!name || typeof name !== "string" || name === "None") return;
+		if (seen.has(name)) return;
+		seen.add(name);
+		results.push({
+			name,
+			strength_model: typeof sm === "number" ? sm : 1.0,
+			strength_clip: typeof sc === "number" ? sc : 1.0,
+		});
+	}
+
+	if (Array.isArray(workflow.nodes)) {
+		for (const node of collectAllNodes(workflow)) {
+			const type = node.type ?? "";
+			if (type === "LoraLoader") {
+				add(node.widgets_values?.[0], node.widgets_values?.[1], node.widgets_values?.[2]);
+			} else if (type === "LoraLoaderModelOnly") {
+				add(node.widgets_values?.[0], node.widgets_values?.[1], 1.0);
+			} else if (type === "ImageMetadataLoRALoader") {
+				// widgets_values: [lora_1, sm_1, sc_1, lora_2, sm_2, sc_2, lora_3, sm_3, sc_3]
+				for (let i = 0; i < 3; i++) {
+					add(
+						node.widgets_values?.[i * 3],
+						node.widgets_values?.[i * 3 + 1],
+						node.widgets_values?.[i * 3 + 2],
+					);
+				}
+			} else if (type === "Lora Loader (LoraManager)") {
+				// widgets_values layout varies by version:
+				//   old: [text_str, [loras...]]
+				//   new: [meta_obj, text_str, [loras...]]  (extra __lm_autocomplete_meta_text widget)
+				// Find the first Array entry regardless of position.
+				const loraList = node.widgets_values?.find((v) => Array.isArray(v));
+				if (loraList) {
+					for (const lora of loraList) {
+						if (lora?.active === false) continue;
+						add(lora?.name, lora?.strength ?? 1.0, lora?.clipStrength ?? lora?.strength ?? 1.0);
+					}
+				}
+			}
+		}
+	} else {
+		for (const node of Object.values(workflow)) {
+			if (!node || typeof node !== "object") continue;
+			const ct = node.class_type ?? "";
+			if (ct === "LoraLoader") {
+				add(node.inputs?.lora_name, node.inputs?.strength_model, node.inputs?.strength_clip);
+			} else if (ct === "LoraLoaderModelOnly") {
+				add(node.inputs?.lora_name, node.inputs?.strength, 1.0);
+			} else if (ct === "ImageMetadataLoRALoader") {
+				for (let i = 1; i <= 3; i++) {
+					add(
+						node.inputs?.[`lora_${i}`],
+						node.inputs?.[`strength_model_${i}`],
+						node.inputs?.[`strength_clip_${i}`],
+					);
+				}
+			} else if (ct === "Lora Loader (LoraManager)") {
+				// inputs.loras.__value__ = [{name, strength, active, clipStrength}, ...]
+				const loraList = node.inputs?.loras?.__value__;
+				if (Array.isArray(loraList)) {
+					for (const lora of loraList) {
+						if (lora?.active === false) continue;
+						add(lora?.name, lora?.strength ?? 1.0, lora?.clipStrength ?? lora?.strength ?? 1.0);
+					}
+				}
+			}
+		}
+	}
+
+	return results;
 }
 
 // ---- プロンプト抽出（Positive / Negative） ----
@@ -545,6 +699,28 @@ function parseSDAParameters(raw) {
 	return { positive, negative, params };
 }
 
+// ---- SD 形式プロンプトから <lora:name:strength> を抽出 ----
+
+function extractLoRAsFromSDPrompt(promptText) {
+	const loras = [];
+	const seen = new Set();
+	const re = /<lora:([^:>\s][^:>]*):([^:>]+)(?::([^>]+))?>/g;
+	let m;
+	while ((m = re.exec(promptText)) !== null) {
+		const name = m[1].trim();
+		const sm = parseFloat(m[2]);
+		const sc = m[3] != null ? parseFloat(m[3]) : sm;
+		if (!name || seen.has(name)) continue;
+		seen.add(name);
+		loras.push({
+			name,
+			strength_model: isNaN(sm) ? 1.0 : sm,
+			strength_clip: isNaN(sc) ? 1.0 : sc,
+		});
+	}
+	return loras;
+}
+
 // ---- Fooocus メタデータ解析 ----
 
 function parseFooocusMetadata(paramsText) {
@@ -565,11 +741,13 @@ function parseFooocusMetadata(paramsText) {
 // 戻り値: { source, checkpoints, vaes, diffusionModels, textEncoders, positives, negatives } | null
 
 export async function extractAllMetadata(file) {
-	const isJSON = file.type === "application/json" || file.name.toLowerCase().endsWith(".json");
+	const name = file.name.toLowerCase();
+	const isJSON = file.type === "application/json" || name.endsWith(".json");
+	const isWebP = file.type === "image/webp" || name.endsWith(".webp");
 
 	if (isJSON) {
 		let workflow;
-		try { workflow = JSON.parse(await file.text()); } catch { return null; }
+		try { workflow = JSON.parse(sanitizeJSON(await file.text())); } catch { return null; }
 		if (!workflow) return null;
 		return {
 			source: "comfyui",
@@ -577,6 +755,24 @@ export async function extractAllMetadata(file) {
 			vaes: extractVAEs(workflow),
 			diffusionModels: extractDiffusionModels(workflow),
 			textEncoders: extractTextEncoders(workflow),
+			loras: extractLoRAs(workflow),
+			...extractPrompts(workflow),
+		};
+	}
+
+	if (isWebP) {
+		const exifData = await readWebPEXIFChunk(file);
+		if (!exifData) return null;
+		const result = extractWorkflowFromEXIF(exifData);
+		if (!result) return null;
+		const workflow = result.data;
+		return {
+			source: "comfyui",
+			checkpoints: extractCheckpoints(workflow),
+			vaes: extractVAEs(workflow),
+			diffusionModels: extractDiffusionModels(workflow),
+			textEncoders: extractTextEncoders(workflow),
+			loras: extractLoRAs(workflow),
 			...extractPrompts(workflow),
 		};
 	}
@@ -588,13 +784,14 @@ export async function extractAllMetadata(file) {
 	// --- ComfyUI (prompt チャンク: API 形式) ---
 	if (chunks.prompt) {
 		let workflow;
-		try { workflow = JSON.parse(chunks.prompt); } catch { return null; }
+		try { workflow = JSON.parse(sanitizeJSON(chunks.prompt)); } catch { return null; }
 		return {
 			source: "comfyui",
 			checkpoints: extractCheckpoints(workflow),
 			vaes: extractVAEs(workflow),
 			diffusionModels: extractDiffusionModels(workflow),
 			textEncoders: extractTextEncoders(workflow),
+			loras: extractLoRAs(workflow),
 			...extractPrompts(workflow),
 		};
 	}
@@ -603,13 +800,14 @@ export async function extractAllMetadata(file) {
 	// IEND 後に tEXt workflow チャンクを追記する形式
 	if (chunks.workflow) {
 		let workflow;
-		try { workflow = JSON.parse(chunks.workflow); } catch { return null; }
+		try { workflow = JSON.parse(sanitizeJSON(chunks.workflow)); } catch { return null; }
 		return {
 			source: "comfyui",
 			checkpoints: extractCheckpoints(workflow),
 			vaes: extractVAEs(workflow),
 			diffusionModels: extractDiffusionModels(workflow),
 			textEncoders: extractTextEncoders(workflow),
+			loras: extractLoRAs(workflow),
 			...extractPrompts(workflow),
 		};
 	}
@@ -624,6 +822,7 @@ export async function extractAllMetadata(file) {
 			vaes: f.vae ? [f.vae] : [],
 			diffusionModels: [],
 			textEncoders: [],
+			loras: [],
 			positives: f.positives,
 			negatives: f.negatives,
 		};
@@ -640,6 +839,9 @@ export async function extractAllMetadata(file) {
 		const positives = positive ? [positive] : [];
 		const negatives = negative ? [negative] : [];
 
+		// プロンプト内の <lora:name:strength> を抽出
+		const loras = extractLoRAsFromSDPrompt(positive);
+
 		// Module 2 が存在 → UNet + テキストエンコーダー構成
 		if (params["Module 2"] != null) {
 			const vaes = params["Module 1"] ? [params["Module 1"]] : [];
@@ -655,18 +857,22 @@ export async function extractAllMetadata(file) {
 				vaes,
 				diffusionModels: [modelName],
 				textEncoders,
+				loras,
 				positives,
 				negatives,
 			};
 		}
 
 		// 通常の Checkpoint 構成
+		// VAE: SD Forge neo は "Module 1"、SD WebUI は "VAE" キーで指定される
+		const vaeValue = params["Module 1"] ?? params["VAE"] ?? null;
 		return {
 			source: "sd",
 			checkpoints: [modelName],
-			vaes: params["Module 1"] ? [params["Module 1"]] : [],
+			vaes: vaeValue ? [vaeValue] : [],
 			diffusionModels: [],
 			textEncoders: [],
+			loras,
 			positives,
 			negatives,
 		};

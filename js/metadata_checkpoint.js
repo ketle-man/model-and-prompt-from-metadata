@@ -78,7 +78,7 @@ app.registerExtension({
 			// ---- 隠しファイル入力 ----
 			const fileInput = document.createElement("input");
 			fileInput.type = "file";
-			fileInput.accept = "image/png,.json,application/json";
+			fileInput.accept = "image/png,image/webp,.json,application/json";
 			fileInput.style.display = "none";
 			container.appendChild(fileInput);
 
@@ -86,6 +86,18 @@ app.registerExtension({
 				statusTxt.textContent = msg;
 				statusTxt.style.color = color;
 			}
+
+			// ---- _metadata_json ウィジェットを非表示 ----
+			setTimeout(() => {
+				const mw = node.widgets?.find((w) => w.name === "_metadata_json");
+				if (mw) {
+					mw.type = "hidden";
+					mw.hidden = true;
+					mw.computeSize = () => [0, -4];
+					if (mw.element) mw.element.style.display = "none";
+				}
+				refreshNodeSize();
+			}, 20);
 
 			// ---- サイズ定数 ----
 			const ITEM_H = 26, DROP_H = 76, SECTION_H = 22, MAX_VISIBLE = 4;
@@ -97,6 +109,21 @@ app.registerExtension({
 				s[0] = Math.max(s[0], MIN_W);
 				node.setSize(s);
 				node.setDirtyCanvas(true, true);
+			}
+
+			// ---- METADATA 出力に接続された LoRA ノードへプッシュ ----
+			function pushMetadata(loras) {
+				const mw = node.widgets?.find((w) => w.name === "_metadata_json");
+				if (mw) mw.value = loras.length > 0 ? JSON.stringify({ loras }) : "";
+
+				const outIdx = node.outputs?.findIndex((o) => o.type === "METADATA");
+				if (outIdx < 0) return;
+				for (const linkId of node.outputs[outIdx]?.links ?? []) {
+					const link = app.graph?.links?.[linkId];
+					if (!link) continue;
+					const dest = app.graph.getNodeById(link.target_id);
+					dest?._receiveMetadata?.(loras);
+				}
 			}
 
 			// ---- 選択ハイライト ----
@@ -290,17 +317,19 @@ app.registerExtension({
 						return;
 					}
 
-					const { checkpoints, vaes, diffusionModels: diffModels, textEncoders } = meta;
+					const { checkpoints, vaes, diffusionModels: diffModels, textEncoders, loras = [] } = meta;
 					metaSource = meta.source;
 					const hasDiff = diffModels.length > 0 || textEncoders.length > 0;
 
 					if (checkpoints.length === 0 && vaes.length === 0 && !hasDiff) {
+						if (loras.length > 0) pushMetadata(loras);
 						setStatus(t("no_ckpt_vae"), "#f90");
 						refreshNodeSize();
 						return;
 					}
 
 					setStatus("");
+					pushMetadata(loras);
 					ckptVisibleCount = renderCkptSection(checkpoints);
 					vaeVisibleCount = renderVaeSection(vaes);
 					infoVisibleCount = renderInfoSection(diffModels, textEncoders);

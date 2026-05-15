@@ -25,9 +25,9 @@ app.registerExtension({
 			const ret = onNodeCreated?.apply(this, arguments);
 			const node = this;
 
-			// positive_text / negative_text ウィジェットを隠す
+			// positive_text / negative_text / _metadata_json ウィジェットを隠す
 			setTimeout(() => {
-				for (const name of ["positive_text", "negative_text"]) {
+				for (const name of ["positive_text", "negative_text", "_metadata_json"]) {
 					const w = node.widgets?.find((w) => w.name === name);
 					if (!w) continue;
 					w.type = "hidden";
@@ -126,7 +126,7 @@ app.registerExtension({
 			// ---- 隠しファイル入力 ----
 			const fileInput = document.createElement("input");
 			fileInput.type = "file";
-			fileInput.accept = "image/png,.json,application/json";
+			fileInput.accept = "image/png,image/webp,.json,application/json";
 			fileInput.style.display = "none";
 			container.appendChild(fileInput);
 
@@ -144,6 +144,21 @@ app.registerExtension({
 				s[0] = Math.max(s[0], 286);
 				node.setSize(s);
 				node.setDirtyCanvas(true, true);
+			}
+
+			// ---- METADATA 出力に接続された LoRA ノードへプッシュ ----
+			function pushMetadata(loras) {
+				const mw = node.widgets?.find((w) => w.name === "_metadata_json");
+				if (mw) mw.value = loras.length > 0 ? JSON.stringify({ loras }) : "";
+
+				const outIdx = node.outputs?.findIndex((o) => o.type === "METADATA");
+				if (outIdx < 0) return;
+				for (const linkId of node.outputs[outIdx]?.links ?? []) {
+					const link = app.graph?.links?.[linkId];
+					if (!link) continue;
+					const dest = app.graph.getNodeById(link.target_id);
+					dest?._receiveMetadata?.(loras);
+				}
 			}
 
 			// ---- 選択ハイライト ----
@@ -370,13 +385,18 @@ app.registerExtension({
 					: t("prompt_header", label, prompts.length);
 				header.style.color = badgeColor;
 
+				const itemEls = [];
 				for (const text of prompts) {
-					list.appendChild(buildPromptItem(text, badgeChar, badgeColor, list, widgetName));
+					const el = buildPromptItem(text, badgeChar, badgeColor, list, widgetName);
+					list.appendChild(el);
+					itemEls.push(el);
 				}
 
 				const visible = Math.min(prompts.length, MAX_PROMPT);
 				list.style.maxHeight = visible * PROMPT_H + "px";
 				section.style.display = "block";
+
+				if (prompts.length === 1) itemEls[0]?.click();
 				return visible;
 			}
 
@@ -409,17 +429,19 @@ app.registerExtension({
 						return;
 					}
 
-					const { checkpoints, vaes, diffusionModels: diffModels, textEncoders, positives, negatives } = meta;
+					const { checkpoints, vaes, diffusionModels: diffModels, textEncoders, positives, negatives, loras = [] } = meta;
 					metaSource = meta.source;
 					const hasDiff = diffModels.length > 0 || textEncoders.length > 0;
 
 					if (!checkpoints.length && !vaes.length && !positives.length && !negatives.length && !hasDiff) {
+						if (loras.length > 0) pushMetadata(loras);
 						setStatus(t("no_info"), "#f90");
 						refreshNodeSize();
 						return;
 					}
 
 					setStatus("");
+					pushMetadata(loras);
 					ckptVC = renderCkptSection(checkpoints);
 					vaeVC = renderVaeSection(vaes);
 					// positive と negative が同一内容の場合はフォールバックと見なす
