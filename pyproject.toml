@@ -1,0 +1,15 @@
+[project]
+name = "model-and-prompt-from-metadata"
+description = "Drop a ComfyUI PNG/WebP/JSON onto the node to instantly extract and apply checkpoint, VAE, and prompts from embedded metadata."
+version = "1.1.0"
+license = {file = "LICENSE"}
+requires-python = ">= 3.10"
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/ketle-man/model-and-prompt-from-metadata"
+
+[tool.comfy]
+PublisherId = "statsu"
+DisplayName = "Model and Prompt from Metadata"
+Icon = "https://raw.githubusercontent.com/ketle-man/model-and-prompt-from-metadata/master/docs/Screenshot_sample.png"
